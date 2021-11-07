@@ -1,0 +1,12 @@
+{
+  "dependencies": {
+    "@bananocoin/bananojs": "^2.4.22",
+    "nanocurrency": "^2.5.0"
+  },
+  "scripts": {
+    "start": "tsc && node dist/index.js"
+  },
+  "devDependencies": {
+    "@types/node": "^16.11.6"
+  }
+}
