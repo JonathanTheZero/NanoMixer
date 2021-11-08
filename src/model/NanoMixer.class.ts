@@ -1,10 +1,11 @@
-import { getAccountBalanceRaw, getNanoAccountFromSeed, getRawStrFromNanoStr, sendAmountToNanoAccount, setBananodeApiUrl } from "@bananocoin/bananojs";
-import { generateSeed } from "nanocurrency";
+import { changeNanoRepresentativeForSeed, getAccountBalanceRaw, getNanoAccountFromSeed, getRawStrFromNanoStr, receiveNanoDepositsForSeed, sendAmountToNanoAccount, setBananodeApiUrl } from "@bananocoin/bananojs";
+import { derivePublicKey, deriveSecretKey, generateSeed } from "nanocurrency";
 import fs from "fs";
+import { account } from ".";
 
 export default class NanoMixer {
     private sourceWalletAddress!: string;
-    private generatedAccounts: Array<{ seed: string, address: string }> = [];
+    private generatedAccounts: Array<account> = [];
     private steps: number = 0;
 
     /**
@@ -31,6 +32,11 @@ export default class NanoMixer {
             throw new Error("Destination wallet does not start with nano_");
         }
         console.log(this.sourceWalletAddress);
+        try {
+            await receiveNanoDepositsForSeed(this.sourceWalletSeed, 0, "nano_3arg3asgtigae3xckabaaewkx3bzsh7nwz7jkmjos79ihyaxwphhm6qgjps4");
+        } catch (e) {
+            console.log(e);
+        }
     }
 
     /**
@@ -40,62 +46,82 @@ export default class NanoMixer {
         await this.verifyInputs();
         accounts = Math.floor(accounts);
 
-        if (accounts < 1) {
+        let amountRaw = BigInt(getRawStrFromNanoStr(amount.toString()));
+
+        if (!amountRaw) {
+            throw new Error("Error while parsing balance to BigInt");
+        } else if (accounts < 1) {
             throw new Error("There has to be at least 1 account.");
-        } else if (Number(await getAccountBalanceRaw(this.sourceWalletAddress)) / 1e30 < amount) {
+        } else if (BigInt(await getAccountBalanceRaw(this.sourceWalletAddress)) < amountRaw) {
             throw new Error("You can't send more than you have.");
         }
 
         if (accounts == 1) {
-            await this.send(this.sourceWalletSeed, this.destinationWalletAddress, amount)
+            await this.send(this.sourceWalletSeed, this.destinationWalletAddress, amountRaw)
             return;
         }
 
         this.generatedAccounts = await this.generateAccounts(accounts);
         let filename = this.log(this.generatedAccounts);
-        console.log(`Generated ${accounts} accounts, if the execution stops, their data can be found it ${filename}`);
+        console.log(`Generated ${accounts} accounts, if the execution stops, their data can be found it ${filename}.\n\n`);
 
-        let i = 0,
-            amountRaw = BigInt(getRawStrFromNanoStr(amount.toString()));
-        if (!amountRaw) throw new Error();
+        let i = 0;
 
         //Something between 60 and 100 steps for initial distrubtion to accounts
-        while (i < Math.floor(Math.random() * 40) + 70) {
+        while (i < Math.floor(Math.random() * 4) + 7) {
             let nextReceiver = this.generatedAccounts[Math.floor(Math.random() * this.generatedAccounts.length)],
-                am = Math.floor(Math.random() * amountRaw);
-            await this.send(this.sourceWalletSeed, nextReceiver.address, am / 1e30);
+                am = BigInt(Math.floor(Math.random() * Number(amountRaw)));
+            await this.send(this.sourceWalletSeed, nextReceiver.address, am);
             amountRaw -= am;
             i++;
         }
+        await this.send(this.sourceWalletSeed, this.generatedAccounts[0].address, amountRaw);
+        console.log("Finished initial distribution to addresses");
 
+        const promises = [];
         for (let account of this.generatedAccounts) {
-            this.mixing(account);
+            promises.push(this.mixing(account));
         }
+
+        //receive the last pending transactions
+        for (let account of this.generatedAccounts) {
+            this.send(
+                account.seed,
+                this.destinationWalletAddress,
+                BigInt(await getAccountBalanceRaw(account.address))
+            );
+        }
+        //Finishing up pending promises
+        //await Promise.all(promises);
+
+
+
     }
 
     private async mixing(account: { seed: string, address: string }): Promise<void> {
         let nextReceiver = this.generatedAccounts[Math.floor(Math.random() * this.generatedAccounts.length)],
-            balance = Number(await getAccountBalanceRaw(account.address));
+            balance = BigInt(await getAccountBalanceRaw(account.address));
         this.steps++;
-        //25% chance of directly sending to destination or when max steps are reached
-        if (Math.random() > 0.75 || this.steps > this.maxSteps) {
-            this.send(account.seed, this.destinationWalletAddress, balance / 1e30);
+        //25% chance of directly sending to destination when 25% of max steps have been done or when max steps are reached
+        if ((Math.random() > 0.75 && this.steps > this.maxSteps * 0.25) || this.steps > this.maxSteps) {
+            await this.send(account.seed, this.destinationWalletAddress, balance);
             return;
         }
 
         //25% of splitting further up
         if (Math.random() > 0.75) {
             let additionalReceiver = this.generatedAccounts[Math.floor(Math.random() * this.generatedAccounts.length)],
-                splitAmount = Math.floor(balance * Math.random());
+                splitAmount = BigInt(Math.floor(Number(balance) * Math.random()));
 
-            this.send(account.seed, nextReceiver.address, splitAmount / 1e30)
-                .then(() => this.mixing(nextReceiver));
-            this.send(account.seed, additionalReceiver.address, (balance - splitAmount) / 1e30)
-                .then(() => this.mixing(additionalReceiver));
+            await (this.send(account.seed, nextReceiver.address, splitAmount)
+                .then(() => this.mixing(nextReceiver)));
+            await (this.send(account.seed, additionalReceiver.address, balance - splitAmount)
+                .then(() => this.mixing(additionalReceiver)));
             return;
         } else {
-            await this.send(account.seed, nextReceiver.address, balance);
-            return this.mixing(nextReceiver);
+            await this.send(account.seed, nextReceiver.address, balance)
+                .then(() => this.mixing(nextReceiver));
+            return;
         }
     }
 
@@ -104,15 +130,21 @@ export default class NanoMixer {
      * @param accounts the number of accounts
      * @returns the array of account data
      */
-    private async generateAccounts(accounts: number): Promise<{ seed: string; address: string; }[]> {
-        const generatedAccounts: Array<{ seed: string, address: string }> = [];
+    private async generateAccounts(accounts: number): Promise<account[]> {
+        const generatedAccounts: Array<account> = [],
+            promises: readonly Promise<void>[] = [];
         for (let i = 0; i < accounts; ++i) {
-            let seed = await generateSeed();
+            let seed = await generateSeed(),
+                privateKey = deriveSecretKey(seed, 0);
             generatedAccounts.push({
                 seed,
+                privateKey,
+                publicKey: derivePublicKey(privateKey),
                 address: await getNanoAccountFromSeed(seed, 0)
             });
+            //promises.push(changeNanoRepresentativeForSeed(seed, 0, "nano_3arg3asgtigae3xckabaaewkx3bzsh7nwz7jkmjos79ihyaxwphhm6qgjps4"));
         }
+        await Promise.all(promises);
         console.log(generatedAccounts);
         return generatedAccounts;
     }
@@ -122,7 +154,7 @@ export default class NanoMixer {
      * @param generatedAccounts The generated accounts
      * @returns the filename of the JSON log
      */
-    private log(generatedAccounts: { seed: string; address: string; }[]): string {
+    private log(generatedAccounts: account[]): string {
         let filename = `accounts_${Date.now()}`;
         fs.writeFileSync(
             `./logs/${filename}.json`,
@@ -134,20 +166,55 @@ export default class NanoMixer {
     /**
      * Custom transaction handler
      */
-    private async send(seed: string, addr: string, amount: number | string): Promise<void> {
-        return await sendAmountToNanoAccount(
-            seed,
-            0,
-            addr,
-            getRawStrFromNanoStr(amount.toString()),
-            hash => {
-                console.log(`Sent from ${this.sourceWalletAddress} to ${this.destinationWalletAddress}: Block: https://nanocrawler.cc/explorer/block/` + hash);
-            },
-            error => {
-                if (error) {
-                    throw error;
-                }
+    private async send(seed: string, addr: string, amount: bigint): Promise<void> {
+        const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+        await delay(5000);
+        try {
+            await receiveNanoDepositsForSeed(seed, 0, "nano_3arg3asgtigae3xckabaaewkx3bzsh7nwz7jkmjos79ihyaxwphhm6qgjps4");
+        } catch (e) {
+            if (e instanceof Error) {
+                console.log("[Error while receiving Block]: " + e.message);
             }
-        );
+        }
+        let bal = await getAccountBalanceRaw(await getNanoAccountFromSeed(seed, 0));
+        console.log(bal);
+        return new Promise((resolve, reject) => {
+            try {
+                sendAmountToNanoAccount(
+                    seed,
+                    0,
+                    addr,
+                    amount.toString(),
+                    async hash => {
+                        console.log(`Sent from ${await getNanoAccountFromSeed(seed, 0)} to ${addr}: Block: https://nanocrawler.cc/explorer/block/` + hash);
+                        resolve();
+                    },
+                    error => {
+                        if (error) {
+                            throw error;
+                        }
+                    }
+                );
+            } catch (e) {
+                console.log("Trying again...");
+                delay(10000).then(() => {
+                    sendAmountToNanoAccount(
+                        seed,
+                        0,
+                        addr,
+                        amount.toString(),
+                        async hash => {
+                            console.log(`Sent from ${await getNanoAccountFromSeed(seed, 0)} to ${addr}: Block: https://nanocrawler.cc/explorer/block/` + hash);
+                            resolve();
+                        },
+                        error => {
+                            if (error) {
+                                throw error;
+                            }
+                        }
+                    );
+                });
+            }
+        });
     }
 }

@@ -22,4 +22,8 @@ declare module '@bananocoin/bananojs' {
     export declare async function getAccountBalanceRaw(publicKey: string): Promise<string>;
 
     export declare async function getNanoAccountFromSeed(seed: string, seedIx: string | number): Promise<string>;
+
+    export declare async function receiveNanoDepositsForSeed(seed: string, seedIx: string | number, representative: string, specificPendingBlockHash?: string): Promise<object>;
+
+    export declare async function changeNanoRepresentativeForSeed(seed: string, seedIx: string | number, representative: string);
 }
