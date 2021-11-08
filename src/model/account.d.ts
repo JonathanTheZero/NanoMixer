@@ -3,4 +3,5 @@ export type account = {
     privateKey: string;
     publicKey: string;
     address: string;
+    isOpenend: boolean;
 }

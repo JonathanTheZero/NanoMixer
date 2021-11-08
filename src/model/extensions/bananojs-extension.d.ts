@@ -19,11 +19,15 @@ declare module '@bananocoin/bananojs' {
 
     export declare function getPrivateKey(seed: string);
 
-    export declare async function getAccountBalanceRaw(publicKey: string): Promise<string>;
+    export declare async function getAccountBalanceRaw(address: string): Promise<string>;
+
+    export declare async function getAccountBalanceAndPendingRaw(address: string): Promise<{ balance: string, pending: string }>;
 
     export declare async function getNanoAccountFromSeed(seed: string, seedIx: string | number): Promise<string>;
 
     export declare async function receiveNanoDepositsForSeed(seed: string, seedIx: string | number, representative: string, specificPendingBlockHash?: string): Promise<object>;
 
-    export declare async function changeNanoRepresentativeForSeed(seed: string, seedIx: string | number, representative: string);
+    export declare async function changeNanoRepresentativeForSeed(seed: string, seedIx: string | number, representative: string): Promise<void>;
+
+    export declare async function openNanoAccountFromSeed(seed: string, seedIx: string | number, representative: string, pendingBlockHash: string, pendingValueRaw: string);
 }
