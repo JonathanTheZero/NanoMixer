@@ -2,7 +2,8 @@
   "dependencies": {
     "@bananocoin/bananojs": "^2.4.22",
     "dotenv": "^10.0.0",
-    "nanocurrency": "^2.5.0"
+    "nanocurrency": "^2.5.0",
+    "typescript": "^4.4.4"
   },
   "scripts": {
     "start": "tsc && cd dist && node index.js"

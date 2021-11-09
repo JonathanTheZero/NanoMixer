@@ -1,6 +1,7 @@
 import {
     changeNanoRepresentativeForSeed,
     getAccountBalanceAndPendingRaw,
+    getAccountBalanceRaw,
     getNanoAccountFromSeed,
     getRawStrFromNanoStr,
     openNanoAccountFromSeed,
@@ -19,7 +20,7 @@ export default class NanoMixer {
     private sourceWalletAddress!: string;
     private generatedAccounts: Array<account> = [];
     private steps: number = 0;
-    private representative: string = "nano_3arg3asgtigae3xckabaaewkx3bzsh7nwz7jkmjos79ihyaxwphhm6qgjps4";
+    public representative: string = "nano_3arg3asgtigae3xckabaaewkx3bzsh7nwz7jkmjos79ihyaxwphhm6qgjps4";
 
     /**
      * 
@@ -80,52 +81,76 @@ export default class NanoMixer {
         console.log(`Generated ${accounts} accounts, if the execution stops, their data can be found it ${filename}.`);
         console.log("==================================\n\n");
 
-        /*let i = 0;
+        let i = 0;
 
-        //Something between 60 and 100 steps for initial distrubtion to accounts
-        while (i < Math.floor(Math.random() * 4) + 7) {
+        //Something between 10 and 25% of max steps
+        while (i < Math.floor(Math.random() * (this.maxSteps * .1)) + (this.maxSteps * .15)) {
             let nextReceiver = this.generatedAccounts[Math.floor(Math.random() * this.generatedAccounts.length)],
-                am = BigInt(Math.floor(Math.random() * Number(amountRaw)));
-            await this.send(this.sourceWalletSeed, nextReceiver.address, am);
-            amountRaw -= am;
+                possibleSources = [
+                    this.sourceWalletSeed,
+                    ...this.generatedAccounts.filter(e => e.isOpenend).map(e => e.seed)
+                ],
+                am;
+
+            let source = possibleSources[Math.floor(Math.random() * possibleSources.length)];
+            if (source === this.sourceWalletSeed) {
+                am = BigInt(Math.floor(Math.random() * Number(amountRaw / 2n)));
+                amountRaw -= am;
+            } else {
+                am = BigInt(await getAccountBalanceRaw(await getNanoAccountFromSeed(source, 0)) || 0);
+            }
+            this.steps++;
+            await this.send(source, nextReceiver.address, am);
             i++;
         }
-        await this.send(this.sourceWalletSeed, this.generatedAccounts[0].address, amountRaw);*/
-        for (let address of this.generatedAccounts) {
+        await this.send(this.sourceWalletSeed, this.generatedAccounts[0].address, amountRaw);
+        /*for (let address of this.generatedAccounts) {
             await this.send(this.sourceWalletSeed, address.address, amountRaw / BigInt(accounts));
-        }
+        }*/
         console.log("==================================");
         console.log("Finished initial distribution to addresses");
         console.log("Starting to mix...");
         console.log("==================================");
-        const promises = [];
         for (let account of this.generatedAccounts) {
-            promises.push(this._mixing(account));
+            await this._mixing(account);
+            //Dunno why, sometiems code do be like that
+            await receiveNanoDepositsForSeed(account.seed, 0, this.representative);
+            await receiveNanoDepositsForSeed(account.seed, 0, this.representative);
+            await receiveNanoDepositsForSeed(account.seed, 0, this.representative);
         }
         await sleep(15000);
-        await Promise.all(promises);
         console.log("==================================");
         console.log("Finished mixing");
         console.log("Transferring remaining funds");
         console.log("==================================");
-        for (let account of this.generatedAccounts) {
-            console.log(this.convertPendingBalance(await getAccountBalanceAndPendingRaw(account.address) || 0));
-            await this.send(
-                account.seed,
-                this.destinationWalletAddress,
-                this.convertPendingBalance(await getAccountBalanceAndPendingRaw(account.address) || 0)
-            );
+        console.log(this.generatedAccounts.length)
+        while (this.generatedAccounts.length) {
+            for (let account of this.generatedAccounts) {
+                //console.log(await receiveNanoDepositsForSeed(account.seed, 0, this.representative), this.convertPendingBalance(await getAccountBalanceAndPendingRaw(account.address) || 0), BigInt(await getAccountBalanceRaw(account.address) || 0));
+                //console.log("Second time:");
+                //console.log(await receiveNanoDepositsForSeed(account.seed, 0, this.representative), this.convertPendingBalance(await getAccountBalanceAndPendingRaw(account.address) || 0), BigInt(await getAccountBalanceRaw(account.address) || 0));
+                await receiveNanoDepositsForSeed(account.seed, 0, this.representative);
+                await receiveNanoDepositsForSeed(account.seed, 0, this.representative);
+                let bal = this.convertPendingBalance(await getAccountBalanceAndPendingRaw(account.address) || 0);
+                await sleep(5000);
+                if (await this.send(
+                    account.seed,
+                    this.destinationWalletAddress,
+                    bal
+                ) !== false || bal === 0n) {
+                    this.generatedAccounts.splice(this.generatedAccounts.indexOf(account), 1);
+                }
+            }
         }
         //Finishing up pending promises
         //await Promise.all(promises);
-
         console.log("==================================");
-        console.log("Finished, please check the destination wallet");
+        console.log(`Finished with ${this.steps} steps, please check the destination wallet`);
         console.log("==================================");
     }
 
     //Legacy implementation
-    private async mixing(account: { seed: string, address: string }): Promise<void> {
+    /*private async mixing(account: { seed: string, address: string }): Promise<void> {
         let nextReceiver = this.generatedAccounts[Math.floor(Math.random() * this.generatedAccounts.length)],
             balance = this.convertPendingBalance(await getAccountBalanceAndPendingRaw(account.address) || 0);
         this.steps++;
@@ -159,17 +184,21 @@ export default class NanoMixer {
                 .then(() => this.mixing(nextReceiver));
             return;
         }
-    }
+    }*/
 
     private async _mixing(account: account): Promise<void> /*Recursion time babey*/ {
         this.steps++;
         let nextReceiver = this.generatedAccounts[Math.floor(Math.random() * this.generatedAccounts.length)],
             balance = this.convertPendingBalance(await getAccountBalanceAndPendingRaw(account.address) || 0);
 
-        if (Math.random() >= 0.8 && this.steps > this.maxSteps * 0.25 || this.steps >= this.maxSteps) {
+        if ((Math.random() >= 0.8 && this.steps > this.maxSteps * 0.25) || this.steps >= this.maxSteps) {
             await this.send(account.seed, this.destinationWalletAddress, balance);
             return;
         }
+
+        await receiveNanoDepositsForSeed(account.seed, 0, this.representative);
+        await receiveNanoDepositsForSeed(account.seed, 0, this.representative);
+
 
         /*if (Math.random() <= 0.25) {
             let additionalReceiver = this.generatedAccounts[Math.floor(Math.random() * this.generatedAccounts.length)];
@@ -180,8 +209,8 @@ export default class NanoMixer {
             //@ts-ignore
             return [this._mixing(nextReceiver), this._mixing(additionalReceiver)];
         } else {*/
-        await this.send(account.seed, nextReceiver.address, balance);
-        return this._mixing(nextReceiver);
+        await this.send(account.seed, nextReceiver.address, BigInt(Math.floor(Number(balance) * Math.random())));
+        return await this._mixing(nextReceiver);
         //}
     }
 
@@ -231,10 +260,10 @@ export default class NanoMixer {
     /**
      * Custom transaction handler
      */
-    private async send(seed: string, addr: string, amount: bigint): Promise<void> {
+    private async send(seed: string, addr: string, amount: bigint): Promise<boolean | boolean> {
         const receiverAccount = this.generatedAccounts.filter(e => e.address == addr)[0];
         if (amount === 0n) {
-            return;
+            return false;
         }
 
         try {
@@ -244,12 +273,15 @@ export default class NanoMixer {
                 console.log("[Error while receiving Block]: " + e.message);
             }
         }
-        let bal = this.convertPendingBalance(await getAccountBalanceAndPendingRaw(await getNanoAccountFromSeed(seed, 0)));
-        console.log("Balance of ", await getNanoAccountFromSeed(seed, 0), ":", bal);
-        if (bal === 0n || amount > bal) {
-            return;
+        let bal = this.convertPendingBalance(await getAccountBalanceAndPendingRaw(await getNanoAccountFromSeed(seed, 0))),
+            actualBalance = BigInt(await getAccountBalanceRaw(await getNanoAccountFromSeed(seed, 0)) || 0);
+        console.log("Balance of ", await getNanoAccountFromSeed(seed, 0), ":", bal, actualBalance);
+        if (actualBalance === 0n || amount > actualBalance) {
+            return false;
         }
-        return new Promise((resolve, reject) => {
+        await receiveNanoDepositsForSeed(seed, 0, this.representative);
+        await sleep(1000);
+        return new Promise<boolean>((resolve, reject) => {
             sendAmountToNanoAccount(
                 seed,
                 0,
@@ -261,10 +293,11 @@ export default class NanoMixer {
                     if (receiverAccount && !receiverAccount.isOpenend) {
                         await sleep(2000);
                         await openNanoAccountFromSeed(receiverAccount.seed, 0, this.representative, hash, amount.toString());
+                        await changeNanoRepresentativeForSeed(receiverAccount.seed, 0, this.representative);
                         receiverAccount.isOpenend = true;
                         console.log("Opened account", receiverAccount.address);
                     }
-                    resolve();
+                    resolve(true);
                 },
                 error => {
                     if (error) {
